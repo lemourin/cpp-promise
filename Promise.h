@@ -213,15 +213,16 @@ class Promise {
   }
 
   template <typename Callable>
-  Promise<Ts...>& error(Callable&& e) {
+  Promise<Ts...> error(Callable&& e) {
     std::unique_lock<std::mutex> lock(data_->mutex_);
+    Promise<Ts...> promise;
+    data_->on_reject_ = [promise, cb = std::move(e)](Exception&& e) { cb(std::move(e)); };
+    data_->on_fulfill_ = [promise](Ts&&... args) { promise.fulfill(std::move(args)...); };
     if (data_->error_ready_) {
       lock.unlock();
-      e(std::move(data_->exception_));
-    } else {
-      data_->on_reject_usercb_ = e;
+      data_->on_reject_(std::move(data_->exception_));
     }
-    return *this;
+    return promise;
   }
 
   void fulfill(Ts&&... value) const {
@@ -244,13 +245,7 @@ class Promise {
       data_->on_reject_(std::move(e));
       data_->on_reject_ = nullptr;
     } else {
-      if (data_->on_reject_usercb_) {
-        lock.unlock();
-        data_->on_reject_usercb_(std::move(e));
-        data_->on_reject_usercb_ = nullptr;
-      } else {
-        data_->exception_ = std::move(e);
-      }
+      data_->exception_ = std::move(e);
     }
   }
 
@@ -264,7 +259,6 @@ class Promise {
     bool error_ready_ = false;
     std::function<void(Ts&&...)> on_fulfill_;
     std::function<void(Exception&&)> on_reject_;
-    std::function<void(Exception&&)> on_reject_usercb_;
     std::tuple<Ts...> value_;
     Exception exception_;
   };

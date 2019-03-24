@@ -9,7 +9,10 @@ Promise<std::string> send(int seconds) {
   Promise<std::string> result;
   std::thread([=] {
     std::this_thread::sleep_for(std::chrono::seconds(seconds));
-    result.fulfill(std::string("dupa"));
+    if (seconds == 2)
+      result.reject(std::exception());
+    else
+      result.fulfill(std::string("dupa"));
   })
       .detach();
   return result;
@@ -79,19 +82,22 @@ int main() {
 
   std::promise<void> result;
   auto promise = send(1)
-                     .then([](std::string result) {
+                     .then([](const std::string& result) {
                        std::cerr << "first try\n";
                        return std::make_tuple(send(1), send(2), send(2), 2);
                      })
-                     .then([](std::string t1, std::string t2, std::string t3, int t4) {
+                     .then([](const std::string& t1, const std::string& t2, const std::string& t3, int t4) {
                        std::cerr << "args: " << t1 << " " << t2 << " " << t3 << " " << t4 << "\n";
                        return send(1);
+                     })
+                     .error([](const std::exception& e) {
+                       std::cerr << "this handler\n";
                      })
                      .then([&result](std::string str) {
                        std::cerr << "value set\n";
                        result.set_value();
                      })
-                     .error([](std::exception e) { std::cerr << "error occurred\n"; });
+                     .error([](const std::exception& e) { std::cerr << "error occurred\n"; });
   result.get_future().get();
   return 0;
 }
