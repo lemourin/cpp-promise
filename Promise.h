@@ -1,346 +1,277 @@
 #include <functional>
 #include <future>
+#include <iostream>
 #include <mutex>
 #include <thread>
 #include <type_traits>
 
 namespace util {
+
+using Exception = std::exception;
+
+namespace v2 {
 namespace detail {
 
-template <class Value>
+template <class... Ts>
 class Promise;
 
-template <>
-class Promise<void>;
-
-template <class Value, class PromiseValue>
-struct FulfillImpl {
-  template <class Callable, class Promise>
-  std::function<void(const Value&)> operator()(const Promise& p,
-                                               const Callable& callable) const {
-    return [=](const Value& d) { p.fulfill(callable(d)); };
-  }
+template <typename T>
+struct PromisedType {
+  using type = void;
 };
 
-template <class Value>
-struct FulfillImpl<Value, void> {
-  template <class Callable, class Promise>
-  std::function<void(const Value&)> operator()(const Promise& p,
-                                               const Callable& callable) const {
-    return [=](const Value& d) {
-      callable(d);
-      p.fulfill();
-    };
-  }
+template <typename T>
+struct PromisedType<Promise<T>> {
+  using type = T;
 };
 
-template <class PromiseValue>
-struct FulfillImpl<void, PromiseValue> {
-  template <class Callable, class Promise>
-  std::function<void()> operator()(const Promise& p,
-                                   const Callable& callable) const {
-    return [=] { p.fulfill(callable()); };
-  }
+template <typename First, typename... Rest>
+struct PromisedType<Promise<First, Rest...>> {
+  using type = std::tuple<First, Rest...>;
 };
 
-template <>
-struct FulfillImpl<void, void> {
-  template <class Callable, class Promise>
-  std::function<void()> operator()(const Promise& p,
-                                   const Callable& callable) const {
-    return [=] {
-      callable();
-      p.fulfill();
-    };
-  }
-};
-
-template <class Value, class Callable>
-struct ReturnType {
-  using type = typename std::result_of<Callable(Value)>::type;
-};
-
-template <class Callable>
-struct ReturnType<void, Callable> {
-  using type = typename std::result_of<Callable()>::type;
-};
-
-template <class Value, class Callable>
-using FulfillCallable =
-    FulfillImpl<Value, typename ReturnType<Value, Callable>::type>;
-
-template <class Value>
-struct Fulfill {
-  template <class Promise>
-  std::function<void(const Value&)> operator()(const Promise& p) const {
-    return [=](const Value& d) { p.fulfill(d); };
-  }
-};
-
-template <>
-struct Fulfill<void> {
-  template <class Promise>
-  std::function<void()> operator()(const Promise& p) const {
-    return [=] { p.fulfill(); };
-  }
-};
-
-template <class Value, typename IsPromise>
-struct Then;
-
-template <class Value>
-struct PromiseType {};
-
-template <class Value>
-struct PromiseType<Promise<Value>> {
-  using Type = Value;
-};
-
-template <class T>
+template <typename T>
 struct IsPromise {
-  using type = std::false_type;
+  static constexpr bool value = false;
 };
 
-template <class T>
+template <typename T>
 struct IsPromise<Promise<T>> {
-  using type = std::true_type;
+  static constexpr bool value = true;
 };
 
-template <class T>
-struct Callback {
-  using type = std::function<void(const T&)>;
+template <typename T>
+struct IsTuple {
+  static constexpr bool value = false;
 };
 
-template <>
-struct Callback<void> {
-  using type = std::function<void()>;
+template <typename... Ts>
+struct IsTuple<std::tuple<Ts...>> {
+  static constexpr bool value = true;
 };
 
-template <class Value>
-class PromiseCommon {
- public:
-  PromiseCommon() : data_(std::make_shared<Data>()) {}
-
-  Promise<Value>& error(std::function<void(const std::exception&)> f) {
-    std::unique_lock<std::mutex> lock(this->data_->mutex_);
-    if (this->data_->ready_) {
-      lock.unlock();
-      try {
-        this->get();
-      } catch (const std::exception& e) {
-        f(e);
-      }
-    } else {
-      this->data_->error_ = f;
-    }
-    return static_cast<Promise<Value>&>(*this);
+template <int... T>
+struct Sequence {
+  template <class Callable, class Tuple>
+  static void call(Callable&& callable, Tuple&& d) {
+    callable(std::move(std::get<T>(d))...);
   }
+};
 
-  void fulfill_exception(std::exception_ptr e) const {
-    data_->result_.set_exception(e);
-    std::unique_lock<std::mutex> lock(data_->mutex_);
-    data_->ready_ = true;
-    auto exception = data_->exception_;
-    auto error = data_->error_;
-    lock.unlock();
-    if (exception) exception(e);
-    if (error) {
-      try {
-        std::rethrow_exception(e);
-      } catch (const std::exception& e) {
-        error(e);
-      }
-    }
-  }
+template <int G>
+struct SequenceGenerator {
+  template <class Sequence>
+  struct Extract;
 
-  struct Data {
-    Data() : future_(result_.get_future()) {}
-
-    std::mutex mutex_;
-    bool ready_ = false;
-    std::promise<Value> result_;
-    std::shared_future<Value> future_;
-    typename Callback<Value>::type callback_;
-    std::function<void(std::exception_ptr)> exception_;
-    std::function<void(const std::exception&)> error_;
+  template <int... Ints>
+  struct Extract<Sequence<Ints...>> {
+    using type = Sequence<Ints..., G - 1>;
   };
 
-  Value get() const {
-    auto future = this->data_->future_;
-    return future.get();
-  }
-
-  std::shared_ptr<Data> data_;
+  using type = typename Extract<typename SequenceGenerator<G - 1>::type>::type;
 };
 
 template <>
-class Promise<void> : public PromiseCommon<void> {
- public:
-  template <class Callable>
-  using ThenType =
-      Then<void,
-           typename IsPromise<typename std::result_of<Callable()>::type>::type>;
+struct SequenceGenerator<0> {
+  using type = Sequence<>;
+};
 
-  template <class Callable>
-  typename ThenType<Callable>::template ReturnType<Callable> then(
-      const Callable& callable) {
-    return ThenType<Callable>()(*this, callable);
+template <class... Values>
+struct CreateValue {
+  static std::tuple<Values...> call(Values&&... args) { return std::make_tuple(std::move(args)...); }
+};
+
+template <class First>
+struct CreateValue<First> {
+  static First call(First&& r) { return r; }
+};
+
+template <class... Ts>
+class Promise {
+ public:
+  Promise() : data_(std::make_shared<CommonData>()) {}
+
+  template <typename Callable>
+  using ReturnType = typename std::result_of<Callable(Ts...)>::type;
+
+  template <class T>
+  using ResolvedType = typename std::conditional<IsPromise<T>::value, typename PromisedType<T>::type, T>::type;
+
+  template <class T>
+  struct PromiseType;
+
+  template <class... T>
+  struct PromiseType<std::tuple<T...>> {
+    using type = Promise<ResolvedType<T>...>;
+  };
+
+  template <class T>
+  struct ReturnedTuple;
+
+  template <class... T>
+  struct ReturnedTuple<Promise<T...>> {
+    using type = std::tuple<T...>;
+  };
+
+  template <class Element>
+  struct AppendElement {
+    template <int Index, class PromiseType, class ResultTuple, class Callable>
+    static void call(Element&& result, const PromiseType& p, const std::shared_ptr<ResultTuple>& output,
+                     Callable&& callable) {
+      std::get<Index>(*output) = std::move(result);
+      callable();
+    }
+  };
+
+  template <class... PromisedType>
+  struct AppendElement<Promise<PromisedType...>> {
+    template <int Index, class PromiseType, class ResultTuple, class Callable>
+    static void call(Promise<PromisedType...>&& d, const PromiseType& p, const std::shared_ptr<ResultTuple>& output,
+                     Callable&& callable) {
+      d.then([output, callable = std::move(callable)](PromisedType&&... args) mutable {
+         std::get<Index>(*output) = CreateValue<PromisedType...>::call(std::move(args)...);
+         callable();
+         return std::make_tuple();
+       })
+          .error([p](Exception&& e) { p.reject(std::move(e)); });
+    }
+  };
+
+  template <int Index, class T>
+  struct EvaluateThen;
+
+  template <int Index, class... T>
+  struct EvaluateThen<Index, std::tuple<T...>> {
+    template <class PromiseType, class ResultTuple>
+    static void call(std::tuple<T...>&& d, const PromiseType& p, const std::shared_ptr<ResultTuple>& result) {
+      auto element = std::move(std::get<Index>(d));
+      auto continuation = [d = std::move(d), p, result]() mutable {
+        EvaluateThen<Index - 1, std::tuple<T...>>::call(std::move(d), p, result);
+      };
+      AppendElement<typename std::tuple_element<Index, std::tuple<T...>>::type>::template call<Index>(
+          std::move(element), p, result, continuation);
+    }
+  };
+
+  template <class... T>
+  struct EvaluateThen<-1, std::tuple<T...>> {
+    template <class Q>
+    struct Call;
+
+    template <class... Q>
+    struct Call<std::tuple<Q...>> {
+      template <class Promise>
+      static void call(std::tuple<T...>&& d, const Promise& p, const std::shared_ptr<std::tuple<Q...>>& result) {
+        SequenceGenerator<std::tuple_size<std::tuple<T...>>::value>::type::call(
+            [p](Q&&... args) { p.fulfill(std::move(args)...); }, *result);
+      }
+    };
+
+    template <class Promise, class ResultTuple>
+    static auto call(std::tuple<T...>&& d, const Promise& p, const std::shared_ptr<ResultTuple>& result) {
+      Call<ResultTuple>::call(std::move(d), p, result);
+    }
+  };
+
+  template <typename Callable, typename Tuple = ReturnType<Callable>,
+            typename ReturnedPromise = typename PromiseType<ReturnType<Callable>>::type,
+            typename = typename std::enable_if<IsTuple<Tuple>::value>::type>
+  ReturnedPromise then(Callable&& cb) {
+    std::unique_lock<std::mutex> lock(data_->mutex_);
+    ReturnedPromise promise;
+    data_->on_fulfill_ = [promise, cb](Ts&&... args) mutable {
+      auto r = cb(std::move(args)...);
+      auto common_state = std::make_shared<typename ReturnedTuple<ReturnedPromise>::type>();
+      EvaluateThen<static_cast<int>(std::tuple_size<Tuple>::value) - 1, Tuple>::call(std::move(r), promise,
+                                                                                     common_state);
+    };
+    data_->on_reject_ = [promise](Exception&& e) mutable { promise.reject(std::move(e)); };
+    if (data_->error_ready_) {
+      lock.unlock();
+      data_->on_reject_(std::move(data_->exception_));
+    } else if (data_->ready_) {
+      lock.unlock();
+      SequenceGenerator<std::tuple_size<std::tuple<Ts...>>::value>::type::call(data_->on_fulfill_, data_->value_);
+    }
+    return promise;
   }
 
-  void fulfill() const {
+  template <typename Callable, typename = typename std::enable_if<std::is_void<ReturnType<Callable>>::value>::type>
+  Promise<> then(Callable&& cb) {
+    return then([cb](Ts&&... args) {
+      cb(std::move(args)...);
+      return std::make_tuple();
+    });
+  }
+
+  template <typename Callable,
+            typename = typename std::enable_if<!IsTuple<ReturnType<Callable>>::value &&
+                                               !std::is_void<ReturnType<Callable>>::value>::type,
+            typename ReturnedPromise = typename PromiseType<std::tuple<ReturnType<Callable>>>::type>
+  ReturnedPromise then(Callable&& cb) {
+    return then([cb](Ts&&... args) mutable { return std::make_tuple(cb(std::move(args)...)); });
+  }
+
+  template <typename Callable>
+  Promise<Ts...>& error(Callable&& e) {
     std::unique_lock<std::mutex> lock(data_->mutex_);
-    if (data_->callback_) {
-      data_->ready_ = true;
+    if (data_->error_ready_) {
       lock.unlock();
-      try {
-        data_->callback_();
-        data_->result_.set_value();
-      } catch (const std::exception& e) {
-        data_->exception_(std::current_exception());
+      e(std::move(data_->exception_));
+    } else {
+      data_->on_reject_usercb_ = e;
+    }
+    return *this;
+  }
+
+  void fulfill(Ts&&... value) const {
+    std::unique_lock<std::mutex> lock(data_->mutex_);
+    data_->ready_ = true;
+    if (data_->on_fulfill_) {
+      lock.unlock();
+      data_->on_fulfill_(std::move(value)...);
+      data_->on_fulfill_ = nullptr;
+    } else {
+      data_->value_ = std::make_tuple(std::move(value)...);
+    }
+  }
+
+  void reject(Exception&& e) const {
+    std::unique_lock<std::mutex> lock(data_->mutex_);
+    data_->error_ready_ = true;
+    if (data_->on_reject_) {
+      lock.unlock();
+      data_->on_reject_(std::move(e));
+      data_->on_reject_ = nullptr;
+    } else {
+      if (data_->on_reject_usercb_) {
+        lock.unlock();
+        data_->on_reject_usercb_(std::move(e));
+        data_->on_reject_usercb_ = nullptr;
+      } else {
+        data_->exception_ = std::move(e);
       }
     }
   }
 
  private:
-  void set_callback(std::function<void()> callback,
-                    std::function<void(std::exception_ptr)> exception) const {
-    std::unique_lock<std::mutex> lock(data_->mutex_);
-    if (data_->ready_ && callback) {
-      lock.unlock();
-      try {
-        get();
-        callback();
-      } catch (const std::exception&) {
-        exception(std::current_exception());
-      }
-    } else {
-      data_->callback_ = callback;
-      data_->exception_ = exception;
-    }
-  }
+  template <class... T>
+  friend class Promise;
 
-  template <class, class>
-  friend class Then;
-
-  template <class>
-  friend struct ForwardThen;
+  struct CommonData {
+    std::mutex mutex_;
+    bool ready_ = false;
+    bool error_ready_ = false;
+    std::function<void(Ts&&...)> on_fulfill_;
+    std::function<void(Exception&&)> on_reject_;
+    std::function<void(Exception&&)> on_reject_usercb_;
+    std::tuple<Ts...> value_;
+    Exception exception_;
+  };
+  std::shared_ptr<CommonData> data_;
 };
-
-template <class Value>
-class Promise : public PromiseCommon<Value> {
- public:
-  template <class Callable>
-  using ThenType =
-      Then<Value, typename IsPromise<
-                      typename std::result_of<Callable(Value)>::type>::type>;
-  template <class Callable>
-  typename ThenType<Callable>::template ReturnType<Callable> then(
-      const Callable& callable) {
-    return ThenType<Callable>()(*this, callable);
-  }
-
-  void fulfill(const Value& d) const {
-    std::unique_lock<std::mutex> lock(this->data_->mutex_);
-    if (this->data_->callback_) {
-      this->data_->ready_ = true;
-      lock.unlock();
-      try {
-        this->data_->callback_(d);
-        this->data_->result_.set_value(d);
-      } catch (const std::exception& e) {
-        this->data_->exception_(std::current_exception());
-      }
-    }
-  }
-
- private:
-  template <class, class>
-  friend class Then;
-
-  template <class>
-  friend struct ForwardThen;
-
-  void set_callback(std::function<void(const Value&)> callback,
-                    std::function<void(std::exception_ptr)> exception) const {
-    std::unique_lock<std::mutex> lock(this->data_->mutex_);
-    if (this->data_->ready_ && callback) {
-      lock.unlock();
-      try {
-        callback(this->get());
-      } catch (const std::exception& e) {
-        exception(std::current_exception());
-      }
-    } else {
-      this->data_->callback_ = callback;
-      this->data_->exception_ = exception;
-    }
-  }
-};
-
-template <class Value>
-struct ForwardThen {
-  template <class Callable>
-  using ReturnType = typename detail::ReturnType<Value, Callable>::type;
-
-  template <class Promise, class Callable>
-  std::function<void(const Value&)> operator()(Promise& d,
-                                               const Callable& callback) {
-    return [=](const Value& value) {
-      using Type = typename PromiseType<ReturnType<Callable>>::Type;
-      auto r = callback(value);
-      r.set_callback(Fulfill<Type>()(d),
-                     [=](std::exception_ptr e) { d.fulfill_exception(e); });
-    };
-  }
-};
-
-template <>
-struct ForwardThen<void> {
-  template <class Callable>
-  using ReturnType = typename detail::ReturnType<void, Callable>::type;
-
-  template <class Promise, class Callable>
-  std::function<void()> operator()(Promise& d, const Callable& callback) {
-    return [=] {
-      using Type = typename PromiseType<ReturnType<Callable>>::Type;
-      auto r = callback();
-      r.set_callback(Fulfill<Type>()(d),
-                     [=](std::exception_ptr e) { d.fulfill_exception(e); });
-    };
-  }
-};
-
-template <class Value>
-struct Then<Value, std::true_type> {
-  template <class Callable>
-  using ReturnType = typename detail::ReturnType<Value, Callable>::type;
-
-  template <class Callable>
-  ReturnType<Callable> operator()(Promise<Value>& d, const Callable& callback) {
-    ReturnType<Callable> result;
-    d.set_callback(ForwardThen<Value>()(result, callback),
-                   [=](std::exception_ptr e) { result.fulfill_exception(e); });
-    return result;
-  }
-};
-
-template <class Value>
-struct Then<Value, std::false_type> {
-  template <class Callable>
-  using ReturnType =
-      Promise<typename detail::ReturnType<Value, Callable>::type>;
-
-  template <class Callable>
-  ReturnType<Callable> operator()(Promise<Value>& p, const Callable& callable) {
-    ReturnType<Callable> result;
-    p.set_callback(FulfillCallable<Value, Callable>()(result, callable),
-                   [=](std::exception_ptr e) { result.fulfill_exception(e); });
-    return result;
-  }
-};
-
 }  // namespace detail
+}  // namespace v2
 
-using detail::Promise;
-
+using v2::detail::Promise;
 }  // namespace util

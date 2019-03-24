@@ -1,7 +1,7 @@
 #include "Promise.h"
 
-#include <string>
 #include <iostream>
+#include <string>
 
 using util::Promise;
 
@@ -15,7 +15,7 @@ Promise<std::string> send(int seconds) {
   return result;
 }
 
-Promise<void> send_void(int seconds) {
+/*Promise<void> send_void(int seconds) {
   Promise<void> result;
   std::thread([=] {
     std::this_thread::sleep_for(std::chrono::seconds(seconds));
@@ -23,10 +23,10 @@ Promise<void> send_void(int seconds) {
   })
       .detach();
   return result;
-}
+} */
 
 int main() {
-  std::promise<int> result;
+  /*std::promise<int> result;
   send(2)
       .then([](const std::string& d) {
         std::cerr << d << "\n";
@@ -75,5 +75,23 @@ int main() {
       .error(
           [](const std::exception& e) { std::cerr << "received exception\n"; });
 
-  return result.get_future().get();
+  return result.get_future().get(); */
+
+  std::promise<void> result;
+  auto promise = send(1)
+                     .then([](std::string result) {
+                       std::cerr << "first try\n";
+                       return std::make_tuple(send(1), send(2), send(2), 2);
+                     })
+                     .then([](std::string t1, std::string t2, std::string t3, int t4) {
+                       std::cerr << "args: " << t1 << " " << t2 << " " << t3 << " " << t4 << "\n";
+                       return send(1);
+                     })
+                     .then([&result](std::string str) {
+                       std::cerr << "value set\n";
+                       result.set_value();
+                     })
+                     .error([](std::exception e) { std::cerr << "error occurred\n"; });
+  result.get_future().get();
+  return 0;
 }
