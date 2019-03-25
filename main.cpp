@@ -56,12 +56,12 @@ void test2(std::promise<void>& result) {
       })
       .then([](int d) { std::cerr << d << "\n"; })
       .then([] { return send_void(1); })
-      .then([](const std::tuple<>&) { return 5; })
+      .then([] { return 5; })
       .then([](int a) {
         std::cerr << a << "\n";
         return send_void(1);
       })
-      .then([](const std::tuple<>&) { std::cerr << "ok\n"; });
+      .then([]() { std::cerr << "ok\n"; });
   send(2)
       .then([=](const std::string& d) {
         std::cerr << "got through first\n";
@@ -94,7 +94,7 @@ void test2(std::promise<void>& result) {
         return 5;
       })
       .then([](int) { std::cerr << "intint\n"; })
-      .error<std::exception>([](const auto& e) { std::cerr << "received exception\n"; });
+      .error<std::logic_error>([](const auto& e) { std::cerr << "received exception\n"; });
 }
 
 int main() {
