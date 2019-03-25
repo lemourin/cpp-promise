@@ -191,7 +191,7 @@ class Promise {
         EvaluateThen<static_cast<int>(std::tuple_size<Tuple>::value) - 1,
                      static_cast<int>(std::tuple_size<StateTuple>::value) - 1, Tuple>::call(std::move(r), promise,
                                                                                             common_state);
-      } catch (const std::exception&) {
+      } catch (...) {
         promise.reject(std::current_exception());
       }
     };
@@ -231,7 +231,7 @@ class Promise {
         std::rethrow_exception(std::move(e));
       } catch (Exception& exception) {
         cb(std::move(exception));
-      } catch (const std::exception&) {
+      } catch (...) {
         promise.reject(std::current_exception());
       }
     };
