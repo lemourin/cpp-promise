@@ -126,8 +126,8 @@ void test3(std::promise<void>& result) {
       .then([](const std::string& d) { return std::make_tuple(send_two(1), send_void(1), 1); })
       .then([](int, std::unique_ptr<std::string>&& d, int) { std::cerr << "multipromise string " << *d << "\n"; })
       .then([] { throw std::logic_error("test"); })
-      .error<std::logic_error>([&result](const auto&) { result.set_value(); })
-      .error<std::exception>([](const auto&) { std::terminate(); });
+      .error<std::system_error>([](const auto&) { std::terminate(); })
+      .error<std::logic_error>([&result](const auto&) { result.set_value(); });
 }
 
 int main() {
