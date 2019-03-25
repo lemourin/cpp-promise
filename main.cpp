@@ -36,6 +36,16 @@ Promise<std::unique_ptr<std::string>> send_movable(int seconds) {
   return result;
 }
 
+Promise<int, std::unique_ptr<std::string>> send_two(int seconds) {
+  Promise<int, std::unique_ptr<std::string>> result;
+  std::thread([=] {
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    result.fulfill(1, std::make_unique<std::string>("test"));
+  })
+      .detach();
+  return result;
+}
+
 void test1(std::promise<void>& result) {
   send(1)
       .then([](const std::string& result) {
@@ -52,7 +62,7 @@ void test1(std::promise<void>& result) {
       })
       .then([&result](std::unique_ptr<std::string>&& e) {
         std::cerr << *e << "\n";
-        throw std::system_error();
+        throw std::system_error(std::error_code());
       })
       .error<std::logic_error>([](const auto& e) { std::cerr << "logic error occurred\n"; })
       .error<std::system_error>([&result](const auto& e) {
@@ -111,11 +121,22 @@ void test2(std::promise<void>& result) {
       .error<std::logic_error>([](const auto& e) { std::cerr << "received exception\n"; });
 }
 
+void test3(std::promise<void>& result) {
+  send(1)
+      .then([](const std::string& d) { return std::make_tuple(send_two(1), send_void(1), 1); })
+      .then([](int, std::unique_ptr<std::string>&& d, int) { std::cerr << "multipromise string " << *d << "\n"; })
+      .then([] { throw std::logic_error("test"); })
+      .error<std::logic_error>([&result](const auto&) { result.set_value(); })
+      .error<std::exception>([](const auto&) { std::terminate(); });
+}
+
 int main() {
-  std::promise<void> t1, t2;
+  std::promise<void> t1, t2, t3;
   test1(t1);
   test2(t2);
+  test3(t3);
   t1.get_future().get();
   t2.get_future().get();
+  t3.get_future().get();
   return 0;
 }

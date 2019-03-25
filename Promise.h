@@ -16,19 +16,9 @@ struct PromisedType {
   using type = void;
 };
 
-template <>
-struct PromisedType<Promise<>> {
-  using type = std::tuple<>;
-};
-
-template <typename T>
-struct PromisedType<Promise<T>> {
-  using type = T;
-};
-
-template <typename First, typename... Rest>
-struct PromisedType<Promise<First, Rest...>> {
-  using type = std::tuple<First, Rest...>;
+template <typename... Ts>
+struct PromisedType<Promise<Ts...>> {
+  using type = std::tuple<Ts...>;
 };
 
 template <typename T>
@@ -82,13 +72,40 @@ struct CreateValue {
   static std::tuple<Values...> call(Values&&... args) { return std::make_tuple(std::move(args)...); }
 };
 
-template <class First>
-struct CreateValue<First> {
-  static First call(First&& r) { return std::move(r); }
-};
-
 template <class Element>
 struct AppendElement;
+
+template <class T1, class T2>
+struct Concatenate;
+
+template <class... Fst, class... Nd>
+struct Concatenate<std::tuple<Fst...>, std::tuple<Nd...>> {
+  using type = std::tuple<Fst..., Nd...>;
+};
+
+template <class T>
+struct Flatten;
+
+template <class First, class... Rest>
+struct Flatten<std::tuple<First, Rest...>> {
+  using rest = typename Flatten<std::tuple<Rest...>>::type;
+  using type = typename Concatenate<First, rest>::type;
+};
+
+template <>
+struct Flatten<std::tuple<>> {
+  using type = std::tuple<>;
+};
+
+template <typename T>
+struct SlotsReserved {
+  static constexpr int value = 1;
+};
+
+template <typename... T>
+struct SlotsReserved<Promise<T...>> {
+  static constexpr int value = std::tuple_size<std::tuple<T...>>::value;
+};
 
 template <class... Ts>
 class Promise {
@@ -106,30 +123,22 @@ class Promise {
     using type = Promise<First, Args...>;
   };
 
-  template <typename Filtered, typename Promise>
-  struct Filter;
-
-  template <typename Filtered>
-  struct Filter<Filtered, Promise<>> {
-    using type = Promise<>;
-  };
-
-  template <typename Filtered, typename First, typename... Rest>
-  struct Filter<Filtered, Promise<First, Rest...>> {
-    using rest = typename Filter<Filtered, Promise<Rest...>>::type;
-    using type = typename std::conditional<std::is_same<Filtered, First>::value, rest,
-                                           typename Prepend<First, rest>::type>::type;
-  };
-
   template <class T>
-  using ResolvedType = typename std::conditional<IsPromise<T>::value, typename PromisedType<T>::type, T>::type;
+  using ResolvedType =
+      typename std::conditional<IsPromise<T>::value, typename PromisedType<T>::type, std::tuple<T>>::type;
 
   template <class T>
   struct PromiseType;
 
   template <class... T>
   struct PromiseType<std::tuple<T...>> {
-    using type = typename Filter<std::tuple<>, Promise<ResolvedType<T>...>>::type;
+    template <class R>
+    struct Replace;
+    template <class... R>
+    struct Replace<std::tuple<R...>> {
+      using type = Promise<R...>;
+    };
+    using type = typename Replace<typename Flatten<std::tuple<ResolvedType<T>...>>::type>::type;
   };
 
   template <class T>
@@ -150,8 +159,8 @@ class Promise {
       using CurrentType = typename std::tuple_element<Index, std::tuple<T...>>::type;
       auto element = std::move(std::get<Index>(d));
       auto continuation = [d = std::move(d), p, result]() mutable {
-        EvaluateThen<Index - 1, ResultIndex - !std::is_same<CurrentType, std::tuple<>>::value, std::tuple<T...>>::call(
-            std::move(d), p, result);
+        EvaluateThen<Index - 1, ResultIndex - SlotsReserved<CurrentType>::value, std::tuple<T...>>::call(std::move(d),
+                                                                                                         p, result);
       };
       AppendElement<CurrentType>::template call<ResultIndex>(std::move(element), p, result, continuation);
     }
@@ -172,7 +181,7 @@ class Promise {
     };
 
     template <class Promise, class ResultTuple>
-    static auto call(std::tuple<T...>&& d, const Promise& p, const std::shared_ptr<ResultTuple>& result) {
+    static void call(std::tuple<T...>&& d, const Promise& p, const std::shared_ptr<ResultTuple>& result) {
       Call<ResultTuple>::call(std::move(d), p, result);
     }
   };
@@ -312,26 +321,30 @@ struct AppendElement {
   }
 };
 
+template <int Index, typename Tuple, class... Args>
+struct SetRange;
+
+template <int Index, typename Tuple>
+struct SetRange<Index, Tuple> {
+  static void call(Tuple&) {}
+};
+
+template <int Index, typename Tuple, class First, class... Rest>
+struct SetRange<Index, Tuple, First, Rest...> {
+  static void call(Tuple& d, First&& f, Rest&&... rest) {
+    std::get<Index>(d) = std::move(f);
+    SetRange<Index + 1, Tuple, Rest...>::call(d, std::move(rest)...);
+  }
+};
+
 template <class... PromisedType>
 struct AppendElement<Promise<PromisedType...>> {
   template <int Index, class PromiseType, class ResultTuple, class Callable>
   static void call(Promise<PromisedType...>&& d, const PromiseType& p, const std::shared_ptr<ResultTuple>& output,
                    Callable&& callable) {
     d.then([output, callable = std::move(callable)](PromisedType&&... args) mutable {
-       std::get<Index>(*output) = CreateValue<PromisedType...>::call(std::move(args)...);
-       callable();
-       return std::make_tuple();
-     })
-        .error_ptr([p](std::exception_ptr&& e) { p.reject(std::move(e)); });
-  }
-};
-
-template <>
-struct AppendElement<Promise<>> {
-  template <int Index, class PromiseType, class ResultTuple, class Callable>
-  static void call(Promise<>&& d, const PromiseType& p, const std::shared_ptr<ResultTuple>& output,
-                   Callable&& callable) {
-    d.then([output, callable = std::move(callable)]() mutable {
+       SetRange<Index - static_cast<int>(std::tuple_size<std::tuple<PromisedType...>>::value) + 1, ResultTuple,
+                PromisedType...>::call(*output, std::move(args)...);
        callable();
        return std::make_tuple();
      })
