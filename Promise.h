@@ -70,11 +70,6 @@ struct SequenceGenerator<0> {
   using type = Sequence<>;
 };
 
-template <class... Values>
-struct CreateValue {
-  static std::tuple<Values...> call(Values&&... args) { return std::make_tuple(std::move(args)...); }
-};
-
 template <class Element>
 struct AppendElement;
 
