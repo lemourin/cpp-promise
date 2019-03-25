@@ -7,8 +7,6 @@
 
 namespace util {
 
-using Exception = std::exception;
-
 namespace v2 {
 namespace detail {
 
@@ -18,6 +16,11 @@ class Promise;
 template <typename T>
 struct PromisedType {
   using type = void;
+};
+
+template <>
+struct PromisedType<Promise<>> {
+  using type = std::tuple<>;
 };
 
 template <typename T>
@@ -35,8 +38,8 @@ struct IsPromise {
   static constexpr bool value = false;
 };
 
-template <typename T>
-struct IsPromise<Promise<T>> {
+template <typename... Ts>
+struct IsPromise<Promise<Ts...>> {
   static constexpr bool value = true;
 };
 
@@ -133,7 +136,7 @@ class Promise {
          callable();
          return std::make_tuple();
        })
-          .error([p](Exception&& e) { p.reject(std::move(e)); });
+          .error_ptr([p](std::exception_ptr&& e) { p.reject(std::move(e)); });
     }
   };
 
@@ -180,12 +183,16 @@ class Promise {
     std::unique_lock<std::mutex> lock(data_->mutex_);
     ReturnedPromise promise;
     data_->on_fulfill_ = [promise, cb](Ts&&... args) mutable {
-      auto r = cb(std::move(args)...);
-      auto common_state = std::make_shared<typename ReturnedTuple<ReturnedPromise>::type>();
-      EvaluateThen<static_cast<int>(std::tuple_size<Tuple>::value) - 1, Tuple>::call(std::move(r), promise,
-                                                                                     common_state);
+      try {
+        auto r = cb(std::move(args)...);
+        auto common_state = std::make_shared<typename ReturnedTuple<ReturnedPromise>::type>();
+        EvaluateThen<static_cast<int>(std::tuple_size<Tuple>::value) - 1, Tuple>::call(std::move(r), promise,
+                                                                                       common_state);
+      } catch (const std::exception&) {
+        promise.reject(std::current_exception());
+      }
     };
-    data_->on_reject_ = [promise](Exception&& e) mutable { promise.reject(std::move(e)); };
+    data_->on_reject_ = [promise](std::exception_ptr&& e) { promise.reject(std::move(e)); };
     if (data_->error_ready_) {
       lock.unlock();
       data_->on_reject_(std::move(data_->exception_));
@@ -212,11 +219,32 @@ class Promise {
     return then([cb](Ts&&... args) mutable { return std::make_tuple(cb(std::move(args)...)); });
   }
 
-  template <typename Callable>
+  template <typename Exception, typename Callable>
   Promise<Ts...> error(Callable&& e) {
     std::unique_lock<std::mutex> lock(data_->mutex_);
     Promise<Ts...> promise;
-    data_->on_reject_ = [promise, cb = std::move(e)](Exception&& e) { cb(std::move(e)); };
+    data_->on_reject_ = [promise, cb = std::move(e)](std::exception_ptr&& e) {
+      try {
+        std::rethrow_exception(std::move(e));
+      } catch (Exception& exception) {
+        cb(std::move(exception));
+      } catch (const std::exception&) {
+        promise.reject(std::current_exception());
+      }
+    };
+    data_->on_fulfill_ = [promise](Ts&&... args) { promise.fulfill(std::move(args)...); };
+    if (data_->error_ready_) {
+      lock.unlock();
+      data_->on_reject_(std::move(data_->exception_));
+    }
+    return promise;
+  }
+
+  template <typename Callable>
+  Promise<Ts...> error_ptr(Callable&& e) {
+    std::unique_lock<std::mutex> lock(data_->mutex_);
+    Promise<Ts...> promise;
+    data_->on_reject_ = e;
     data_->on_fulfill_ = [promise](Ts&&... args) { promise.fulfill(std::move(args)...); };
     if (data_->error_ready_) {
       lock.unlock();
@@ -237,7 +265,13 @@ class Promise {
     }
   }
 
+  template <class Exception, typename = typename std::enable_if<std::is_base_of<
+                                 std::exception, typename std::remove_reference<Exception>::type>::value>::type>
   void reject(Exception&& e) const {
+    reject(std::make_exception_ptr(std::move(e)));
+  }
+
+  void reject(std::exception_ptr&& e) const {
     std::unique_lock<std::mutex> lock(data_->mutex_);
     data_->error_ready_ = true;
     if (data_->on_reject_) {
@@ -258,9 +292,9 @@ class Promise {
     bool ready_ = false;
     bool error_ready_ = false;
     std::function<void(Ts&&...)> on_fulfill_;
-    std::function<void(Exception&&)> on_reject_;
+    std::function<void(std::exception_ptr&&)> on_reject_;
     std::tuple<Ts...> value_;
-    Exception exception_;
+    std::exception_ptr exception_;
   };
   std::shared_ptr<CommonData> data_;
 };
