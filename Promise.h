@@ -1,3 +1,6 @@
+#ifndef PROMISE_H
+#define PROMISE_H
+
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -357,3 +360,5 @@ struct AppendElement<Promise<PromisedType...>> {
 
 using v2::detail::Promise;
 }  // namespace util
+
+#endif
