@@ -26,6 +26,16 @@ Promise<> send_void(int seconds) {
   return result;
 }
 
+Promise<std::unique_ptr<std::string>> send_movable(int seconds) {
+  Promise<std::unique_ptr<std::string>> result;
+  std::thread([=] {
+    std::this_thread::sleep_for(std::chrono::seconds(seconds));
+    result.fulfill(std::make_unique<std::string>("string"));
+  })
+      .detach();
+  return result;
+}
+
 void test1(std::promise<void>& result) {
   send(1)
       .then([](const std::string& result) {
@@ -36,10 +46,13 @@ void test1(std::promise<void>& result) {
         std::cerr << "args: " << t1 << " " << t2 << " " << t3 << " " << t4 << "\n";
         return send(1);
       })
-      .then([&result](const std::string& str) {
+      .then([](const std::string& str) {
         std::cerr << "value set\n";
+        return send_movable(1);
+      })
+      .then([&result](std::unique_ptr<std::string>&& e) {
+        std::cerr << *e << "\n";
         throw std::system_error();
-        result.set_value();
       })
       .error<std::logic_error>([](const auto& e) { std::cerr << "logic error occurred\n"; })
       .error<std::system_error>([&result](const auto& e) {

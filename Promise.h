@@ -84,7 +84,7 @@ struct CreateValue {
 
 template <class First>
 struct CreateValue<First> {
-  static First call(First&& r) { return r; }
+  static First call(First&& r) { return std::move(r); }
 };
 
 template <class Element>
